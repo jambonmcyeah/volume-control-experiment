@@ -43,29 +43,77 @@ void VolumeController::sendSinkList()
     for (unsigned int i = 0; i < deviceCount; i++)
     {
         IMMDevice *device = nullptr;
+
         IPropertyStore *deviceProperties = nullptr;
         PROPVARIANT deviceProperty;
+        std::wstring name;
+        std::wstring desc;
+        float volume;
+        BOOL muted;
 
+        IAudioEndpointVolume* endpoint = nullptr;
+        CAudioEndpointVolumeCallback* callback;
+        
+        // Get Properties
         devices->Item(i, &device);
         device->OpenPropertyStore(STGM_READ, &deviceProperties);
-        deviceProperties->GetValue(PKEY_Device_FriendlyName, &deviceProperty);
 
-        
+        deviceProperties->GetValue(PKEY_Device_FriendlyName, &deviceProperty);
+        name = deviceProperty.pwszVal;
+        //PropVariantClear(&deviceProperty);
+
+        deviceProperties->GetValue(PKEY_Device_DeviceDesc, &deviceProperty);
+        desc = deviceProperty.pwszVal;
+        //PropVariantClear(&deviceProperty);
+
+        std::cout << "\nDevice Begin"  << std::endl;
+        std::wcout << L"Name: " << name << std::endl;
+        std::wcout << L"Desc: " << desc << std::endl;
+
+        hr = device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, NULL, (void**)&endpoint);
+        if (hr != S_OK)
+        {
+            std::wcout << L"Warning: Failed to create IAudioEndpointVolume for " << name;
+            std::cout << "Code: " << hr;
+            continue;
+        }
+        endpoint->GetMasterVolumeLevelScalar(&volume);
+        endpoint->GetMute(&muted);
+        std::cout << "Max Volume: 1.0" << std::endl;
+        std::cout << "Volume: " << volume << std::endl;
+        std::cout << "Muted: " << (bool)muted << std::endl;
+
+        // Register Callback
+        callback = new CAudioEndpointVolumeCallback(*this, name);
+        sinkList[name] = std::make_tuple(endpoint, callback);
+        endpoint->RegisterControlChangeNotify(callback);
+
+        device->Release();
     }
+    devices->Release();
 }
 
 void VolumeController::connected()
 {
-    deviceCallback = new CMMNotificationClient(this);
+    deviceCallback = new CMMNotificationClient(*this);
     deviceEnumerator->RegisterEndpointNotificationCallback(deviceCallback);
+    sendSinkList();
 }
 
-
+void VolumeController::handlePacket(std::tuple<std::wstring, std::wstring, float> packet)
+{
+    if (std::get<0>(packet) == L"get"){
+        sendSinkList();
+    }
+    else if (std::get<0>(packet) == L"set"){
+        std::get<0>(sinkList[std::get<1>(packet)])->SetMasterVolumeLevelScalar(std::get<2>(packet), NULL);
+    }
+}
 
 
 // CMMNotificationClient
 
-VolumeController::CMMNotificationClient::CMMNotificationClient(VolumeController* x) : enclosing(x), _cRef(1) {}
+VolumeController::CMMNotificationClient::CMMNotificationClient(VolumeController& x) : enclosing(x), _cRef(1) {}
 
 VolumeController::CMMNotificationClient::~CMMNotificationClient() {}
 
@@ -112,26 +160,26 @@ HRESULT STDMETHODCALLTYPE VolumeController::CMMNotificationClient::OnDefaultDevi
 {
     if (flow == eRender)
     {
-        enclosing->sendSinkList();
+        enclosing.sendSinkList();
     }
     return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE VolumeController::CMMNotificationClient::OnDeviceAdded(LPCWSTR pwstrDeviceId)
 {
-    enclosing->sendSinkList();
+    enclosing.sendSinkList();
     return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE VolumeController::CMMNotificationClient::OnDeviceRemoved(LPCWSTR pwstrDeviceId)
 {
-    enclosing->sendSinkList();
+    enclosing.sendSinkList();
     return S_OK;
 }
 
 HRESULT STDMETHODCALLTYPE VolumeController::CMMNotificationClient::OnDeviceStateChanged(LPCWSTR pwstrDeviceId, DWORD dwNewState)
 {
-    enclosing->sendSinkList();
+    enclosing.sendSinkList();
     return S_OK;
 }
 
@@ -143,7 +191,7 @@ HRESULT STDMETHODCALLTYPE VolumeController::CMMNotificationClient::OnPropertyVal
 
 // CAudioEndpointVolumeCallback
 
-VolumeController::CAudioEndpointVolumeCallback::CAudioEndpointVolumeCallback(VolumeController* x, std::string sinkName) : enclosing(x), name(sinkName), _cRef(1) {}
+VolumeController::CAudioEndpointVolumeCallback::CAudioEndpointVolumeCallback(VolumeController& x, std::wstring sinkName) : enclosing(x), name(sinkName), _cRef(1) {}
 
 VolumeController::CAudioEndpointVolumeCallback::~CAudioEndpointVolumeCallback() {}
 
@@ -188,8 +236,13 @@ HRESULT STDMETHODCALLTYPE VolumeController::CAudioEndpointVolumeCallback::QueryI
 
 HRESULT STDMETHODCALLTYPE VolumeController::CAudioEndpointVolumeCallback::OnNotify(PAUDIO_VOLUME_NOTIFICATION_DATA pNotify)
 {
-    std::cout << "Name: " << this->name;
-    std::cout << "Volume: " << pNotify->fMasterVolume;
-    std::cout << "Muted: " << pNotify->bMuted;
+    std::cout << "\nDevice Volume Change"  << std::endl;
+    std::wcout << L"Name: " << name << std::endl;
+    std::cout << "Volume: " << pNotify->fMasterVolume << std::endl;
+    std::cout << "Muted: " << pNotify->bMuted << std::endl;
+
+    float volume;
+    std::get<0>(enclosing.sinkList[name])->GetMasterVolumeLevelScalar(&volume);
+    std::cout << "Volume DB: " << volume << std::endl;
     return S_OK;
 }
