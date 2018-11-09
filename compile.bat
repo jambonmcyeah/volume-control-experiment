@@ -1,0 +1,1 @@
+clang-cl /EHsc /std:c++11 main.cpp volumecontroler.cpp -o test.exe
